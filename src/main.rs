@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 
 #[derive(Parser)]
 #[command(name = "simple_tor")]
-#[command(about = "A simple TCP proxy implementation in Rust")]
+#[command(about = "A simple TCP/SOCKS4 proxy implementation in Rust")]
 #[command(version = "0.1.0")]
 struct Cli {
     #[arg(short, long, default_value = "127.0.0.1:1080")]
@@ -13,8 +13,8 @@ struct Cli {
     listen: SocketAddr,
     
     #[arg(short, long)]
-    #[arg(help = "Target server address to forward connections to")]
-    target: SocketAddr,
+    #[arg(help = "Target server address for direct proxy mode (if not specified, runs as SOCKS4 proxy)")]
+    target: Option<SocketAddr>,
     
     #[arg(short, long, action = clap::ArgAction::Count)]
     #[arg(help = "Increase verbosity (-v for info, -vv for debug)")]
@@ -37,9 +37,15 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
     
-    let config = ProxyConfig::new()
-        .with_listen_addr(cli.listen)
-        .with_target_addr(cli.target);
+    let config = if let Some(target) = cli.target {
+        ProxyConfig::new()
+            .with_listen_addr(cli.listen)
+            .with_target_addr(target)
+    } else {
+        ProxyConfig::new()
+            .with_listen_addr(cli.listen)
+            .with_socks4_mode()
+    };
     
     let proxy = TcpProxy::new(config);
     proxy.start().await

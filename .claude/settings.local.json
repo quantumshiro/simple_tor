@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)",
+      "Bash(RUST_LOG=info cargo run)",
+      "Bash(curl:*)",
+      "WebSearch",
+      "WebFetch(domain:www.openssh.com)",
+      "Bash(nc:*)",
+      "Bash(dig:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
