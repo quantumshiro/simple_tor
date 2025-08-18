@@ -1,9 +1,9 @@
 use anyhow::Result;
 use log::{error, info};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
-use crate::config::ProxyConfig;
+use crate::config::{ProxyConfig, ProxyMode};
+use crate::connection::ConnectionHandler;
 
 pub struct TcpProxy {
     config: ProxyConfig,
@@ -15,84 +15,46 @@ impl TcpProxy {
     }
 
     pub async fn start(&self) -> Result<()> {
-        info!("Starting TCP proxy on {}", self.config.listen_addr);
+        let mode_desc = self.get_mode_description();
+        
+        info!("Starting {mode_desc} on {}", self.config.listen_addr);
         
         let listener = TcpListener::bind(self.config.listen_addr).await?;
-        info!("TCP proxy listening on {}", self.config.listen_addr);
+        info!("{mode_desc} listening on {}", self.config.listen_addr);
         
         loop {
             let (client_stream, client_addr) = listener.accept().await?;
             info!("New connection from {client_addr}");
             
-            let target_addr = self.config.target_addr;
+            let mode = self.config.mode.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_client_connection(client_stream, target_addr).await {
+                let handler = ConnectionHandler::new(client_stream, client_addr, mode);
+                if let Err(e) = handler.handle().await {
                     error!("Error handling client {client_addr}: {e}");
                 }
             });
         }
     }
-}
-
-async fn handle_client_connection(client_stream: TcpStream, target_addr: std::net::SocketAddr) -> Result<()> {
-    info!("Connecting to target server: {target_addr}");
     
-    let server_stream = TcpStream::connect(target_addr).await?;
-    info!("Connected to target server");
-    
-    let (client_reader, client_writer) = client_stream.into_split();
-    let (server_reader, server_writer) = server_stream.into_split();
-    
-    let client_to_server = forward_data(client_reader, server_writer, "client", "server");
-    let server_to_client = forward_data(server_reader, client_writer, "server", "client");
-    
-    tokio::select! {
-        result = client_to_server => {
-            if let Err(e) = result {
-                error!("Error forwarding client to server: {e}");
-            }
-        }
-        result = server_to_client => {
-            if let Err(e) = result {
-                error!("Error forwarding server to client: {e}");
-            }
+    fn get_mode_description(&self) -> String {
+        match &self.config.mode {
+            ProxyMode::Direct(addr) => format!("Direct proxy to {addr}"),
+            ProxyMode::Socks4 => "SOCKS4 proxy".to_string(),
         }
     }
-    
-    info!("Connection closed");
-    Ok(())
-}
-
-async fn forward_data<R, W>(mut reader: R, mut writer: W, from: &str, to: &str) -> Result<()>
-where
-    R: AsyncReadExt + Unpin,
-    W: AsyncWriteExt + Unpin,
-{
-    let mut buffer = vec![0u8; 4096];
-    
-    loop {
-        let n = reader.read(&mut buffer).await?;
-        if n == 0 {
-            break;
-        }
-        writer.write_all(&buffer[..n]).await?;
-        writer.flush().await?;
-        info!("Forwarded {n} bytes from {from} to {to}");
-    }
-    
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProxyConfig;
     use std::net::SocketAddr;
 
     #[tokio::test]
     async fn test_proxy_config_creation() {
         let config = ProxyConfig::new();
         assert_eq!(config.listen_addr, "127.0.0.1:1080".parse::<SocketAddr>().unwrap());
-        assert_eq!(config.target_addr, "93.184.216.34:80".parse::<SocketAddr>().unwrap());
+        assert!(matches!(config.mode, ProxyMode::Socks4));
     }
 
     #[tokio::test]
@@ -105,19 +67,16 @@ mod tests {
             .with_target_addr(target_addr);
             
         assert_eq!(config.listen_addr, listen_addr);
-        assert_eq!(config.target_addr, target_addr);
+        assert!(matches!(config.mode, ProxyMode::Direct(_)));
     }
-
-    #[tokio::test]
-    async fn test_forward_data() {
-        let test_data = b"Hello, World!";
-        let mut reader = std::io::Cursor::new(test_data);
-        let mut writer = Vec::new();
+    
+    #[test]
+    fn test_mode_description() {
+        let proxy = TcpProxy::new(ProxyConfig::new().with_socks4_mode());
+        assert_eq!(proxy.get_mode_description(), "SOCKS4 proxy");
         
-        forward_data(&mut reader, &mut writer, "test", "test")
-            .await
-            .unwrap();
-            
-        assert_eq!(writer, test_data);
+        let target = "127.0.0.1:8080".parse().unwrap();
+        let proxy = TcpProxy::new(ProxyConfig::new().with_target_addr(target));
+        assert_eq!(proxy.get_mode_description(), "Direct proxy to 127.0.0.1:8080");
     }
 }
